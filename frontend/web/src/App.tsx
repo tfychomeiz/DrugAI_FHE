@@ -1,39 +1,50 @@
 import { ConnectButton } from '@rainbow-me/rainbowkit';
 import '@rainbow-me/rainbowkit/styles.css';
-import React, { useEffect, useState } from "react";
+import React, { JSX, useEffect, useState } from "react";
 import { getContractReadOnly, getContractWithSigner } from "./components/useContract";
 import "./App.css";
 import { useAccount } from 'wagmi';
 import { useFhevm, useEncrypt, useDecrypt } from '../fhevm-sdk/src';
+import { ethers } from 'ethers';
 
-interface DrugData {
-  id: string;
+interface DrugMoleculeData {
+  id: number;
   name: string;
-  molecularWeight: number;
-  successRate: number;
+  moleculeId: string;
+  activityScore: string;
+  toxicity: string;
   timestamp: number;
   creator: string;
   publicValue1: number;
   publicValue2: number;
   isVerified?: boolean;
   decryptedValue?: number;
+  encryptedValueHandle?: string;
+}
+
+interface MoleculeAnalysis {
+  efficacyScore: number;
+  safetyProfile: number;
+  bioavailability: number;
+  synthesisComplexity: number;
+  patentPotential: number;
 }
 
 const App: React.FC = () => {
   const { address, isConnected } = useAccount();
   const [loading, setLoading] = useState(true);
-  const [drugs, setDrugs] = useState<DrugData[]>([]);
+  const [molecules, setMolecules] = useState<DrugMoleculeData[]>([]);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [showCreateModal, setShowCreateModal] = useState(false);
-  const [creatingDrug, setCreatingDrug] = useState(false);
+  const [creatingMolecule, setCreatingMolecule] = useState(false);
   const [transactionStatus, setTransactionStatus] = useState<{ visible: boolean; status: "pending" | "success" | "error"; message: string; }>({ 
     visible: false, 
-    status: "pending", 
+    status: "pending" as const, 
     message: "" 
   });
-  const [newDrugData, setNewDrugData] = useState({ name: "", molecularWeight: "", successRate: "" });
-  const [selectedDrug, setSelectedDrug] = useState<DrugData | null>(null);
-  const [decryptedData, setDecryptedData] = useState<{ molecularWeight: number | null; successRate: number | null }>({ molecularWeight: null, successRate: null });
+  const [newMoleculeData, setNewMoleculeData] = useState({ name: "", efficacy: "", toxicity: "" });
+  const [selectedMolecule, setSelectedMolecule] = useState<DrugMoleculeData | null>(null);
+  const [decryptedData, setDecryptedData] = useState<{ efficacy: number | null; toxicity: number | null }>({ efficacy: null, toxicity: null });
   const [isDecrypting, setIsDecrypting] = useState(false);
   const [contractAddress, setContractAddress] = useState("");
   const [fhevmInitializing, setFhevmInitializing] = useState(false);
@@ -41,21 +52,34 @@ const App: React.FC = () => {
   const [filterVerified, setFilterVerified] = useState(false);
 
   const { status, initialize, isInitialized } = useFhevm();
-  const { encrypt, isEncrypting } = useEncrypt();
+  const { encrypt, isEncrypting} = useEncrypt();
   const { verifyDecryption, isDecrypting: fheIsDecrypting } = useDecrypt();
 
   useEffect(() => {
     const initFhevmAfterConnection = async () => {
-      if (!isConnected || isInitialized || fhevmInitializing) return;
+      if (!isConnected) {
+        return;
+      }
+      
+      if (isInitialized) {
+        return;
+      }
+      
+      if (fhevmInitializing) {
+        return;
+      }
       
       try {
         setFhevmInitializing(true);
+        console.log('Initializing FHEVM after wallet connection...');
         await initialize();
+        console.log('FHEVM initialized successfully');
       } catch (error) {
+        console.error('Failed to initialize FHEVM:', error);
         setTransactionStatus({ 
           visible: true, 
           status: "error", 
-          message: "FHEVM initialization failed" 
+          message: "FHEVM initialization failed. Please check your wallet connection." 
         });
         setTimeout(() => setTransactionStatus({ visible: false, status: "pending", message: "" }), 3000);
       } finally {
@@ -96,16 +120,17 @@ const App: React.FC = () => {
       if (!contract) return;
       
       const businessIds = await contract.getAllBusinessIds();
-      const drugsList: DrugData[] = [];
+      const moleculesList: DrugMoleculeData[] = [];
       
       for (const businessId of businessIds) {
         try {
           const businessData = await contract.getBusinessData(businessId);
-          drugsList.push({
-            id: businessId,
+          moleculesList.push({
+            id: parseInt(businessId.replace('molecule-', '')) || Date.now(),
             name: businessData.name,
-            molecularWeight: 0,
-            successRate: 0,
+            moleculeId: businessId,
+            activityScore: businessId,
+            toxicity: businessId,
             timestamp: Number(businessData.timestamp),
             creator: businessData.creator,
             publicValue1: Number(businessData.publicValue1) || 0,
@@ -118,7 +143,7 @@ const App: React.FC = () => {
         }
       }
       
-      setDrugs(drugsList);
+      setMolecules(moleculesList);
     } catch (e) {
       setTransactionStatus({ visible: true, status: "error", message: "Failed to load data" });
       setTimeout(() => setTransactionStatus({ visible: false, status: "pending", message: "" }), 3000);
@@ -127,46 +152,46 @@ const App: React.FC = () => {
     }
   };
 
-  const createDrug = async () => {
+  const createMolecule = async () => {
     if (!isConnected || !address) { 
       setTransactionStatus({ visible: true, status: "error", message: "Please connect wallet first" });
       setTimeout(() => setTransactionStatus({ visible: false, status: "pending", message: "" }), 3000);
       return; 
     }
     
-    setCreatingDrug(true);
-    setTransactionStatus({ visible: true, status: "pending", message: "Creating drug data with FHE..." });
+    setCreatingMolecule(true);
+    setTransactionStatus({ visible: true, status: "pending", message: "Creating molecule with Zama FHE..." });
     
     try {
       const contract = await getContractWithSigner();
       if (!contract) throw new Error("Failed to get contract with signer");
       
-      const molecularWeight = parseInt(newDrugData.molecularWeight) || 0;
-      const businessId = `drug-${Date.now()}`;
+      const efficacyValue = parseInt(newMoleculeData.efficacy) || 0;
+      const businessId = `molecule-${Date.now()}`;
       
-      const encryptedResult = await encrypt(contractAddress, address, molecularWeight);
+      const encryptedResult = await encrypt(contractAddress, address, efficacyValue);
       
       const tx = await contract.createBusinessData(
         businessId,
-        newDrugData.name,
+        newMoleculeData.name,
         encryptedResult.encryptedData,
         encryptedResult.proof,
-        parseInt(newDrugData.successRate) || 0,
+        parseInt(newMoleculeData.toxicity) || 0,
         0,
-        "Encrypted Drug Molecular Data"
+        "Drug Molecule Data"
       );
       
       setTransactionStatus({ visible: true, status: "pending", message: "Waiting for transaction confirmation..." });
       await tx.wait();
       
-      setTransactionStatus({ visible: true, status: "success", message: "Drug data created successfully!" });
+      setTransactionStatus({ visible: true, status: "success", message: "Molecule created successfully!" });
       setTimeout(() => {
         setTransactionStatus({ visible: false, status: "pending", message: "" });
       }, 2000);
       
       await loadData();
       setShowCreateModal(false);
-      setNewDrugData({ name: "", molecularWeight: "", successRate: "" });
+      setNewMoleculeData({ name: "", efficacy: "", toxicity: "" });
     } catch (e: any) {
       const errorMessage = e.message?.includes("user rejected transaction") 
         ? "Transaction rejected by user" 
@@ -174,7 +199,7 @@ const App: React.FC = () => {
       setTransactionStatus({ visible: true, status: "error", message: errorMessage });
       setTimeout(() => setTransactionStatus({ visible: false, status: "pending", message: "" }), 3000);
     } finally { 
-      setCreatingDrug(false); 
+      setCreatingMolecule(false); 
     }
   };
 
@@ -193,6 +218,7 @@ const App: React.FC = () => {
       const businessData = await contractRead.getBusinessData(businessId);
       if (businessData.isVerified) {
         const storedValue = Number(businessData.decryptedValue) || 0;
+        
         setTransactionStatus({ 
           visible: true, 
           status: "success", 
@@ -201,6 +227,7 @@ const App: React.FC = () => {
         setTimeout(() => {
           setTransactionStatus({ visible: false, status: "pending", message: "" });
         }, 2000);
+        
         return storedValue;
       }
       
@@ -239,6 +266,7 @@ const App: React.FC = () => {
         setTimeout(() => {
           setTransactionStatus({ visible: false, status: "pending", message: "" });
         }, 2000);
+        
         await loadData();
         return null;
       }
@@ -255,37 +283,45 @@ const App: React.FC = () => {
     }
   };
 
-  const checkAvailability = async () => {
-    try {
-      const contract = await getContractReadOnly();
-      if (!contract) return;
-      
-      const isAvailable = await contract.isAvailable();
-      setTransactionStatus({ 
-        visible: true, 
-        status: "success", 
-        message: "Contract is available and ready" 
-      });
-      setTimeout(() => {
-        setTransactionStatus({ visible: false, status: "pending", message: "" });
-      }, 2000);
-    } catch (e) {
-      setTransactionStatus({ visible: true, status: "error", message: "Availability check failed" });
-      setTimeout(() => setTransactionStatus({ visible: false, status: "pending", message: "" }), 3000);
-    }
+  const analyzeMolecule = (molecule: DrugMoleculeData, decryptedEfficacy: number | null, decryptedToxicity: number | null): MoleculeAnalysis => {
+    const efficacy = molecule.isVerified ? (molecule.decryptedValue || 0) : (decryptedEfficacy || molecule.publicValue1 || 5);
+    const toxicity = molecule.publicValue1 || 5;
+    
+    const baseEfficacy = Math.min(100, Math.round((efficacy * 0.8 + (10 - toxicity) * 0.2) * 10));
+    const timeFactor = Math.max(0.7, Math.min(1.3, 1 - (Date.now()/1000 - molecule.timestamp) / (60 * 60 * 24 * 30)));
+    const efficacyScore = Math.round(baseEfficacy * timeFactor);
+    
+    const safetyProfile = Math.round((10 - toxicity) * 8 + efficacy * 0.5);
+    const bioavailability = Math.round(efficacy * 0.6 + (10 - toxicity) * 4);
+    
+    const synthesisComplexity = Math.max(10, Math.min(90, 100 - (efficacy * 0.3 + toxicity * 2)));
+    const patentPotential = Math.min(95, Math.round((efficacy * 0.7 + (10 - toxicity) * 0.3) * 9));
+
+    return {
+      efficacyScore,
+      safetyProfile,
+      bioavailability,
+      synthesisComplexity,
+      patentPotential
+    };
   };
 
-  const filteredDrugs = drugs.filter(drug => {
-    const matchesSearch = drug.name.toLowerCase().includes(searchTerm.toLowerCase());
-    const matchesFilter = !filterVerified || drug.isVerified;
+  const filteredMolecules = molecules.filter(molecule => {
+    const matchesSearch = molecule.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+                         molecule.creator.toLowerCase().includes(searchTerm.toLowerCase());
+    const matchesFilter = !filterVerified || molecule.isVerified;
     return matchesSearch && matchesFilter;
   });
 
   const stats = {
-    total: drugs.length,
-    verified: drugs.filter(d => d.isVerified).length,
-    avgSuccessRate: drugs.length > 0 ? drugs.reduce((sum, d) => sum + d.publicValue1, 0) / drugs.length : 0,
-    recent: drugs.filter(d => Date.now()/1000 - d.timestamp < 60 * 60 * 24 * 7).length
+    totalMolecules: molecules.length,
+    verifiedMolecules: molecules.filter(m => m.isVerified).length,
+    avgEfficacy: molecules.length > 0 
+      ? molecules.reduce((sum, m) => sum + m.publicValue1, 0) / molecules.length 
+      : 0,
+    recentMolecules: molecules.filter(m => 
+      Date.now()/1000 - m.timestamp < 60 * 60 * 24 * 7
+    ).length
   };
 
   if (!isConnected) {
@@ -293,18 +329,34 @@ const App: React.FC = () => {
       <div className="app-container">
         <header className="app-header">
           <div className="logo">
-            <h1>FHE Drug Discovery 🔬</h1>
+            <h1>DrugAI FHE 🔬</h1>
           </div>
           <div className="header-actions">
-            <ConnectButton accountStatus="address" chainStatus="icon" showBalance={false}/>
+            <div className="wallet-connect-wrapper">
+              <ConnectButton accountStatus="address" chainStatus="icon" showBalance={false}/>
+            </div>
           </div>
         </header>
         
         <div className="connection-prompt">
           <div className="connection-content">
             <div className="connection-icon">🔬</div>
-            <h2>Connect Wallet to Access Encrypted Drug Research</h2>
-            <p>Secure molecular data sharing with fully homomorphic encryption for collaborative drug discovery.</p>
+            <h2>Connect Your Wallet to Continue</h2>
+            <p>Please connect your wallet to initialize the encrypted drug discovery system and access molecular data.</p>
+            <div className="connection-steps">
+              <div className="step">
+                <span>1</span>
+                <p>Connect your wallet using the button above</p>
+              </div>
+              <div className="step">
+                <span>2</span>
+                <p>FHE system will automatically initialize</p>
+              </div>
+              <div className="step">
+                <span>3</span>
+                <p>Start creating and analyzing encrypted molecular data</p>
+              </div>
+            </div>
           </div>
         </div>
       </div>
@@ -316,6 +368,8 @@ const App: React.FC = () => {
       <div className="loading-screen">
         <div className="fhe-spinner"></div>
         <p>Initializing FHE Encryption System...</p>
+        <p>Status: {fhevmInitializing ? "Initializing FHEVM" : status}</p>
+        <p className="loading-note">This may take a few moments</p>
       </div>
     );
   }
@@ -323,7 +377,7 @@ const App: React.FC = () => {
   if (loading) return (
     <div className="loading-screen">
       <div className="fhe-spinner"></div>
-      <p>Loading encrypted drug database...</p>
+      <p>Loading encrypted drug discovery system...</p>
     </div>
   );
 
@@ -331,288 +385,421 @@ const App: React.FC = () => {
     <div className="app-container">
       <header className="app-header">
         <div className="logo">
-          <h1>FHE Drug Discovery 🔬</h1>
-          <p>Secure Molecular Data Sharing</p>
+          <h1>DrugAI FHE 🔬</h1>
         </div>
         
         <div className="header-actions">
-          <button onClick={checkAvailability} className="availability-btn">
-            Check System
+          <button 
+            onClick={() => setShowCreateModal(true)} 
+            className="create-btn"
+          >
+            + New Molecule
           </button>
-          <button onClick={() => setShowCreateModal(true)} className="create-btn">
-            + Add Molecular Data
-          </button>
-          <ConnectButton accountStatus="address" chainStatus="icon" showBalance={false}/>
+          <div className="wallet-connect-wrapper">
+            <ConnectButton accountStatus="address" chainStatus="icon" showBalance={false}/>
+          </div>
         </div>
       </header>
       
-      <div className="main-content">
-        <div className="stats-panels">
-          <div className="stat-panel">
-            <h3>Total Compounds</h3>
-            <div className="stat-value">{stats.total}</div>
-          </div>
-          <div className="stat-panel">
-            <h3>Verified Data</h3>
-            <div className="stat-value">{stats.verified}/{stats.total}</div>
-          </div>
-          <div className="stat-panel">
-            <h3>Avg Success Rate</h3>
-            <div className="stat-value">{stats.avgSuccessRate.toFixed(1)}%</div>
-          </div>
-          <div className="stat-panel">
-            <h3>This Week</h3>
-            <div className="stat-value">+{stats.recent}</div>
-          </div>
-        </div>
-
-        <div className="search-section">
-          <div className="search-bar">
-            <input 
-              type="text" 
-              placeholder="Search compounds..." 
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-            />
-          </div>
-          <div className="filters">
-            <label>
-              <input 
-                type="checkbox" 
-                checked={filterVerified}
-                onChange={(e) => setFilterVerified(e.target.checked)}
-              />
-              Show Verified Only
-            </label>
-            <button onClick={loadData} disabled={isRefreshing}>
-              {isRefreshing ? "Refreshing..." : "Refresh"}
-            </button>
+      <div className="main-content-container">
+        <div className="dashboard-section">
+          <h2>Encrypted Drug Discovery Platform (FHE 🔐)</h2>
+          
+          <div className="stats-grid">
+            <div className="stat-card">
+              <div className="stat-icon">🧪</div>
+              <div className="stat-content">
+                <div className="stat-value">{stats.totalMolecules}</div>
+                <div className="stat-label">Total Molecules</div>
+              </div>
+            </div>
+            
+            <div className="stat-card">
+              <div className="stat-icon">✅</div>
+              <div className="stat-content">
+                <div className="stat-value">{stats.verifiedMolecules}</div>
+                <div className="stat-label">Verified Data</div>
+              </div>
+            </div>
+            
+            <div className="stat-card">
+              <div className="stat-icon">📊</div>
+              <div className="stat-content">
+                <div className="stat-value">{stats.avgEfficacy.toFixed(1)}</div>
+                <div className="stat-label">Avg Efficacy</div>
+              </div>
+            </div>
+            
+            <div className="stat-card">
+              <div className="stat-icon">🆕</div>
+              <div className="stat-content">
+                <div className="stat-value">{stats.recentMolecules}</div>
+                <div className="stat-label">This Week</div>
+              </div>
+            </div>
           </div>
         </div>
-
-        <div className="drugs-list">
-          {filteredDrugs.length === 0 ? (
-            <div className="no-data">
-              <p>No molecular data found</p>
-              <button onClick={() => setShowCreateModal(true)}>
-                Add First Compound
+        
+        <div className="molecules-section">
+          <div className="section-header">
+            <h2>Molecular Database</h2>
+            <div className="header-actions">
+              <div className="search-filter">
+                <input 
+                  type="text" 
+                  placeholder="Search molecules..." 
+                  value={searchTerm}
+                  onChange={(e) => setSearchTerm(e.target.value)}
+                  className="search-input"
+                />
+                <label className="filter-checkbox">
+                  <input 
+                    type="checkbox" 
+                    checked={filterVerified}
+                    onChange={(e) => setFilterVerified(e.target.checked)}
+                  />
+                  Verified Only
+                </label>
+              </div>
+              <button 
+                onClick={loadData} 
+                className="refresh-btn" 
+                disabled={isRefreshing}
+              >
+                {isRefreshing ? "Refreshing..." : "Refresh"}
               </button>
             </div>
-          ) : (
-            filteredDrugs.map((drug, index) => (
-              <div 
-                className={`drug-item ${drug.isVerified ? "verified" : ""}`}
-                key={index}
-                onClick={() => setSelectedDrug(drug)}
-              >
-                <div className="drug-header">
-                  <h3>{drug.name}</h3>
-                  <span className={`status ${drug.isVerified ? "verified" : "encrypted"}`}>
-                    {drug.isVerified ? "✅ Verified" : "🔒 Encrypted"}
-                  </span>
-                </div>
-                <div className="drug-info">
-                  <div>Success Rate: {drug.publicValue1}%</div>
-                  <div>Created: {new Date(drug.timestamp * 1000).toLocaleDateString()}</div>
-                </div>
-                {drug.isVerified && drug.decryptedValue && (
-                  <div className="decrypted-value">
-                    Molecular Weight: {drug.decryptedValue}
-                  </div>
-                )}
+          </div>
+          
+          <div className="molecules-list">
+            {filteredMolecules.length === 0 ? (
+              <div className="no-molecules">
+                <p>No molecular data found</p>
+                <button 
+                  className="create-btn" 
+                  onClick={() => setShowCreateModal(true)}
+                >
+                  Add First Molecule
+                </button>
               </div>
-            ))
-          )}
+            ) : filteredMolecules.map((molecule, index) => (
+              <div 
+                className={`molecule-item ${selectedMolecule?.id === molecule.id ? "selected" : ""} ${molecule.isVerified ? "verified" : ""}`} 
+                key={index}
+                onClick={() => setSelectedMolecule(molecule)}
+              >
+                <div className="molecule-title">{molecule.name}</div>
+                <div className="molecule-meta">
+                  <span>Toxicity Score: {molecule.publicValue1}/10</span>
+                  <span>Created: {new Date(molecule.timestamp * 1000).toLocaleDateString()}</span>
+                </div>
+                <div className="molecule-status">
+                  Status: {molecule.isVerified ? "✅ On-chain Verified" : "🔓 Ready for Verification"}
+                  {molecule.isVerified && molecule.decryptedValue && (
+                    <span className="verified-value">Efficacy: {molecule.decryptedValue}</span>
+                  )}
+                </div>
+                <div className="molecule-creator">Contributor: {molecule.creator.substring(0, 6)}...{molecule.creator.substring(38)}</div>
+              </div>
+            ))}
+          </div>
         </div>
       </div>
       
       {showCreateModal && (
-        <div className="modal-overlay">
-          <div className="create-modal">
-            <div className="modal-header">
-              <h2>Add Encrypted Molecular Data</h2>
-              <button onClick={() => setShowCreateModal(false)}>&times;</button>
-            </div>
-            
-            <div className="modal-body">
-              <div className="form-group">
-                <label>Compound Name</label>
-                <input 
-                  type="text" 
-                  value={newDrugData.name}
-                  onChange={(e) => setNewDrugData({...newDrugData, name: e.target.value})}
-                  placeholder="Enter compound name..."
-                />
-              </div>
-              
-              <div className="form-group">
-                <label>Molecular Weight (FHE Encrypted)</label>
-                <input 
-                  type="number" 
-                  value={newDrugData.molecularWeight}
-                  onChange={(e) => setNewDrugData({...newDrugData, molecularWeight: e.target.value})}
-                  placeholder="Enter molecular weight..."
-                />
-                <div className="hint">Integer values only for FHE encryption</div>
-              </div>
-              
-              <div className="form-group">
-                <label>Predicted Success Rate % (Public)</label>
-                <input 
-                  type="number" 
-                  min="0"
-                  max="100"
-                  value={newDrugData.successRate}
-                  onChange={(e) => setNewDrugData({...newDrugData, successRate: e.target.value})}
-                  placeholder="Enter success rate..."
-                />
-              </div>
-            </div>
-            
-            <div className="modal-footer">
-              <button onClick={() => setShowCreateModal(false)}>Cancel</button>
-              <button 
-                onClick={createDrug}
-                disabled={creatingDrug || isEncrypting}
-              >
-                {creatingDrug || isEncrypting ? "Encrypting..." : "Create"}
-              </button>
-            </div>
-          </div>
-        </div>
+        <ModalCreateMolecule 
+          onSubmit={createMolecule} 
+          onClose={() => setShowCreateModal(false)} 
+          creating={creatingMolecule} 
+          moleculeData={newMoleculeData} 
+          setMoleculeData={setNewMoleculeData}
+          isEncrypting={isEncrypting}
+        />
       )}
       
-      {selectedDrug && (
-        <DrugDetailModal 
-          drug={selectedDrug}
-          onClose={() => {
-            setSelectedDrug(null);
-            setDecryptedData({ molecularWeight: null, successRate: null });
-          }}
-          decryptedData={decryptedData}
-          setDecryptedData={setDecryptedData}
-          isDecrypting={isDecrypting || fheIsDecrypting}
-          decryptData={() => decryptData(selectedDrug.id)}
+      {selectedMolecule && (
+        <MoleculeDetailModal 
+          molecule={selectedMolecule} 
+          onClose={() => { 
+            setSelectedMolecule(null); 
+            setDecryptedData({ efficacy: null, toxicity: null }); 
+          }} 
+          decryptedData={decryptedData} 
+          setDecryptedData={setDecryptedData} 
+          isDecrypting={isDecrypting || fheIsDecrypting} 
+          decryptData={() => decryptData(selectedMolecule.moleculeId)}
+          analyzeMolecule={analyzeMolecule}
         />
       )}
       
       {transactionStatus.visible && (
-        <div className="transaction-toast">
-          <div className={`toast-content ${transactionStatus.status}`}>
-            {transactionStatus.message}
+        <div className="transaction-modal">
+          <div className="transaction-content">
+            <div className={`transaction-icon ${transactionStatus.status}`}>
+              {transactionStatus.status === "pending" && <div className="fhe-spinner"></div>}
+              {transactionStatus.status === "success" && <div className="success-icon">✓</div>}
+              {transactionStatus.status === "error" && <div className="error-icon">✗</div>}
+            </div>
+            <div className="transaction-message">{transactionStatus.message}</div>
           </div>
         </div>
       )}
-
-      <footer className="app-footer">
-        <p>FHE-based Drug Discovery Platform - Secure Molecular Data Sharing</p>
-      </footer>
     </div>
   );
 };
 
-const DrugDetailModal: React.FC<{
-  drug: DrugData;
-  onClose: () => void;
-  decryptedData: { molecularWeight: number | null; successRate: number | null };
-  setDecryptedData: (value: { molecularWeight: number | null; successRate: number | null }) => void;
-  isDecrypting: boolean;
-  decryptData: () => Promise<number | null>;
-}> = ({ drug, onClose, decryptedData, setDecryptedData, isDecrypting, decryptData }) => {
-  const handleDecrypt = async () => {
-    if (decryptedData.molecularWeight !== null) {
-      setDecryptedData({ molecularWeight: null, successRate: null });
-      return;
-    }
-    
-    const decrypted = await decryptData();
-    if (decrypted !== null) {
-      setDecryptedData({ molecularWeight: decrypted, successRate: decrypted });
+const ModalCreateMolecule: React.FC<{
+  onSubmit: () => void; 
+  onClose: () => void; 
+  creating: boolean;
+  moleculeData: any;
+  setMoleculeData: (data: any) => void;
+  isEncrypting: boolean;
+}> = ({ onSubmit, onClose, creating, moleculeData, setMoleculeData, isEncrypting }) => {
+  const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const { name, value } = e.target;
+    if (name === 'efficacy') {
+      const intValue = value.replace(/[^\d]/g, '');
+      setMoleculeData({ ...moleculeData, [name]: intValue });
+    } else {
+      setMoleculeData({ ...moleculeData, [name]: value });
     }
   };
 
   return (
     <div className="modal-overlay">
-      <div className="detail-modal">
+      <div className="create-molecule-modal">
         <div className="modal-header">
-          <h2>Molecular Data Details</h2>
-          <button onClick={onClose}>&times;</button>
+          <h2>New Molecular Data</h2>
+          <button onClick={onClose} className="close-modal">&times;</button>
         </div>
         
         <div className="modal-body">
-          <div className="drug-info">
-            <div className="info-row">
-              <span>Compound Name:</span>
-              <strong>{drug.name}</strong>
+          <div className="fhe-notice">
+            <strong>FHE 🔐 Encryption</strong>
+            <p>Efficacy data will be encrypted with Zama FHE 🔐 (Integer only)</p>
+          </div>
+          
+          <div className="form-group">
+            <label>Molecule Name *</label>
+            <input 
+              type="text" 
+              name="name" 
+              value={moleculeData.name} 
+              onChange={handleChange} 
+              placeholder="Enter molecule name..." 
+            />
+          </div>
+          
+          <div className="form-group">
+            <label>Efficacy Score (Integer only) *</label>
+            <input 
+              type="number" 
+              name="efficacy" 
+              value={moleculeData.efficacy} 
+              onChange={handleChange} 
+              placeholder="Enter efficacy score..." 
+              step="1"
+              min="0"
+            />
+            <div className="data-type-label">FHE Encrypted Integer</div>
+          </div>
+          
+          <div className="form-group">
+            <label>Toxicity Score (1-10) *</label>
+            <input 
+              type="number" 
+              min="1" 
+              max="10" 
+              name="toxicity" 
+              value={moleculeData.toxicity} 
+              onChange={handleChange} 
+              placeholder="Enter toxicity score..." 
+            />
+            <div className="data-type-label">Public Data</div>
+          </div>
+        </div>
+        
+        <div className="modal-footer">
+          <button onClick={onClose} className="cancel-btn">Cancel</button>
+          <button 
+            onClick={onSubmit} 
+            disabled={creating || isEncrypting || !moleculeData.name || !moleculeData.efficacy || !moleculeData.toxicity} 
+            className="submit-btn"
+          >
+            {creating || isEncrypting ? "Encrypting and Creating..." : "Create Molecule"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const MoleculeDetailModal: React.FC<{
+  molecule: DrugMoleculeData;
+  onClose: () => void;
+  decryptedData: { efficacy: number | null; toxicity: number | null };
+  setDecryptedData: (value: { efficacy: number | null; toxicity: number | null }) => void;
+  isDecrypting: boolean;
+  decryptData: () => Promise<number | null>;
+  analyzeMolecule: (molecule: DrugMoleculeData, decryptedEfficacy: number | null, decryptedToxicity: number | null) => MoleculeAnalysis;
+}> = ({ molecule, onClose, decryptedData, setDecryptedData, isDecrypting, decryptData, analyzeMolecule }) => {
+  const handleDecrypt = async () => {
+    if (decryptedData.efficacy !== null) { 
+      setDecryptedData({ efficacy: null, toxicity: null }); 
+      return; 
+    }
+    
+    const decrypted = await decryptData();
+    if (decrypted !== null) {
+      setDecryptedData({ efficacy: decrypted, toxicity: decrypted });
+    }
+  };
+
+  const analysis = analyzeMolecule(molecule, decryptedData.efficacy, decryptedData.toxicity);
+
+  return (
+    <div className="modal-overlay">
+      <div className="molecule-detail-modal">
+        <div className="modal-header">
+          <h2>Molecular Analysis</h2>
+          <button onClick={onClose} className="close-modal">&times;</button>
+        </div>
+        
+        <div className="modal-body">
+          <div className="molecule-info">
+            <div className="info-item">
+              <span>Molecule Name:</span>
+              <strong>{molecule.name}</strong>
             </div>
-            <div className="info-row">
-              <span>Creator:</span>
-              <span>{drug.creator.substring(0, 8)}...{drug.creator.substring(36)}</span>
+            <div className="info-item">
+              <span>Contributor:</span>
+              <strong>{molecule.creator.substring(0, 6)}...{molecule.creator.substring(38)}</strong>
             </div>
-            <div className="info-row">
-              <span>Created:</span>
-              <span>{new Date(drug.timestamp * 1000).toLocaleString()}</span>
+            <div className="info-item">
+              <span>Date Added:</span>
+              <strong>{new Date(molecule.timestamp * 1000).toLocaleDateString()}</strong>
             </div>
-            <div className="info-row">
-              <span>Success Rate:</span>
-              <span>{drug.publicValue1}%</span>
+            <div className="info-item">
+              <span>Public Toxicity Score:</span>
+              <strong>{molecule.publicValue1}/10</strong>
             </div>
           </div>
           
-          <div className="encrypted-section">
-            <h3>Encrypted Molecular Data</h3>
+          <div className="data-section">
+            <h3>Encrypted Efficacy Data</h3>
+            
             <div className="data-row">
-              <span>Molecular Weight:</span>
-              <span className="encrypted-value">
-                {drug.isVerified && drug.decryptedValue ? 
-                  `${drug.decryptedValue} (Verified)` : 
-                  decryptedData.molecularWeight !== null ? 
-                  `${decryptedData.molecularWeight} (Decrypted)` : 
-                  "🔒 FHE Encrypted"
+              <div className="data-label">Efficacy Score:</div>
+              <div className="data-value">
+                {molecule.isVerified && molecule.decryptedValue ? 
+                  `${molecule.decryptedValue} (On-chain Verified)` : 
+                  decryptedData.efficacy !== null ? 
+                  `${decryptedData.efficacy} (Locally Decrypted)` : 
+                  "🔒 FHE Encrypted Integer"
                 }
-              </span>
+              </div>
               <button 
-                onClick={handleDecrypt}
+                className={`decrypt-btn ${(molecule.isVerified || decryptedData.efficacy !== null) ? 'decrypted' : ''}`}
+                onClick={handleDecrypt} 
                 disabled={isDecrypting}
-                className={`decrypt-btn ${drug.isVerified || decryptedData.molecularWeight !== null ? 'decrypted' : ''}`}
               >
-                {isDecrypting ? "Processing..." : 
-                 drug.isVerified ? "Verified" :
-                 decryptedData.molecularWeight !== null ? "Re-verify" : "Decrypt"}
+                {isDecrypting ? (
+                  "🔓 Verifying..."
+                ) : molecule.isVerified ? (
+                  "✅ Verified"
+                ) : decryptedData.efficacy !== null ? (
+                  "🔄 Re-verify"
+                ) : (
+                  "🔓 Verify Decryption"
+                )}
               </button>
             </div>
           </div>
           
-          {(drug.isVerified || decryptedData.molecularWeight !== null) && (
+          {(molecule.isVerified || decryptedData.efficacy !== null) && (
             <div className="analysis-section">
-              <h3>Drug Properties Analysis</h3>
-              <div className="properties-grid">
-                <div className="property">
-                  <span>Bioavailability</span>
-                  <div className="property-bar">
+              <h3>Drug Development Analysis</h3>
+              
+              <div className="analysis-charts">
+                <div className="chart-container">
+                  <div className="chart-label">Efficacy Score</div>
+                  <div className="chart-bar">
                     <div 
-                      className="bar-fill" 
-                      style={{ width: `${Math.min(100, (drug.publicValue1 * 0.8))}%` }}
-                    ></div>
+                      className="bar-fill efficacy" 
+                      style={{ width: `${analysis.efficacyScore}%` }}
+                    >
+                      <span className="bar-value">{analysis.efficacyScore}</span>
+                    </div>
                   </div>
                 </div>
-                <div className="property">
-                  <span>Solubility</span>
-                  <div className="property-bar">
+                
+                <div className="chart-container">
+                  <div className="chart-label">Safety Profile</div>
+                  <div className="chart-bar">
                     <div 
-                      className="bar-fill" 
-                      style={{ width: `${Math.min(100, (drug.publicValue1 * 0.6))}%` }}
-                    ></div>
+                      className="bar-fill safety" 
+                      style={{ width: `${analysis.safetyProfile}%` }}
+                    >
+                      <span className="bar-value">{analysis.safetyProfile}</span>
+                    </div>
                   </div>
                 </div>
-                <div className="property">
-                  <span>Stability</span>
-                  <div className="property-bar">
+                
+                <div className="chart-container">
+                  <div className="chart-label">Bioavailability</div>
+                  <div className="chart-bar">
                     <div 
-                      className="bar-fill" 
-                      style={{ width: `${Math.min(100, (drug.publicValue1 * 0.9))}%` }}
-                    ></div>
+                      className="bar-fill bio" 
+                      style={{ width: `${analysis.bioavailability}%` }}
+                    >
+                      <span className="bar-value">{analysis.bioavailability}</span>
+                    </div>
                   </div>
+                </div>
+                
+                <div className="chart-container">
+                  <div className="chart-label">Synthesis Complexity</div>
+                  <div className="chart-bar">
+                    <div 
+                      className="bar-fill complexity" 
+                      style={{ width: `${analysis.synthesisComplexity}%` }}
+                    >
+                      <span className="bar-value">{analysis.synthesisComplexity}</span>
+                    </div>
+                  </div>
+                </div>
+                
+                <div className="chart-container">
+                  <div className="chart-label">Patent Potential</div>
+                  <div className="chart-bar">
+                    <div 
+                      className="bar-fill patent" 
+                      style={{ width: `${analysis.patentPotential}%` }}
+                    >
+                      <span className="bar-value">{analysis.patentPotential}</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              
+              <div className="decrypted-values">
+                <div className="value-item">
+                  <span>Efficacy Score:</span>
+                  <strong>
+                    {molecule.isVerified ? 
+                      `${molecule.decryptedValue} (On-chain Verified)` : 
+                      `${decryptedData.efficacy} (Locally Decrypted)`
+                    }
+                  </strong>
+                  <span className={`data-badge ${molecule.isVerified ? 'verified' : 'local'}`}>
+                    {molecule.isVerified ? 'On-chain Verified' : 'Local Decryption'}
+                  </span>
+                </div>
+                <div className="value-item">
+                  <span>Toxicity Score:</span>
+                  <strong>{molecule.publicValue1}/10</strong>
+                  <span className="data-badge public">Public Data</span>
                 </div>
               </div>
             </div>
@@ -620,10 +807,14 @@ const DrugDetailModal: React.FC<{
         </div>
         
         <div className="modal-footer">
-          <button onClick={onClose}>Close</button>
-          {!drug.isVerified && (
-            <button onClick={handleDecrypt} disabled={isDecrypting}>
-              Verify On-chain
+          <button onClick={onClose} className="close-btn">Close</button>
+          {!molecule.isVerified && (
+            <button 
+              onClick={handleDecrypt} 
+              disabled={isDecrypting}
+              className="verify-btn"
+            >
+              {isDecrypting ? "Verifying on-chain..." : "Verify on-chain"}
             </button>
           )}
         </div>
